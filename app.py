@@ -558,9 +558,9 @@ def create_timelapse(project_folder, project_name, status_placeholder, start_yea
                 txt_clip = (TextClip(font=font_path, 
                           text=str(year),
                           font_size=30,
-                          color='white')
-                  .vertical_align('bottom')
-                  .horizontal_align('left')
+                          color='white',
+                          vertical_align='bottom',
+                          horizontal_align='left')
                   .set_duration(frame_duration)
                   .set_start(i * frame_duration))
             except Exception as e:

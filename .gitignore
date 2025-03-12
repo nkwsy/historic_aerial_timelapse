@@ -1,0 +1,106 @@
+# Project-specific directories
+download_aerial_images/
+test_wms/
+test_moviepy/
+historic_imagery/
+high_res_tiles/
+
+# Exclude everything in downloaded_aerial_images
+downloaded_aerial_images/*
+# But include this specific file
+!downloaded_aerial_images/Bubbly_test/
+!downloaded_aerial_images/Bubbly_test/1938_Bubbly_test.jpg
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.env
+.venv
+env.bak/
+venv.bak/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local configuration
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Media files that might be large
+*.mp4
+*.tif
+*.tiff
+*.geotiff
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.mov
+*.avi
+*.webm
+*.wmv
+
+# Data files
+*.csv
+*.json
+*.xml
+*.sqlite
+*.db
