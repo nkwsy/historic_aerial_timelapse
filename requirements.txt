@@ -1,0 +1,10 @@
+streamlit
+folium>=0.14.0
+streamlit-folium
+requests
+Pillow
+numpy
+scipy
+moviepy
+loguru
+opencv-python
