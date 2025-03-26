@@ -8,7 +8,7 @@ import time
 import json
 import shutil
 from datetime import datetime
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 from scipy.ndimage import binary_dilation
 from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
@@ -18,6 +18,9 @@ import zipfile
 import base64
 from branca.element import Figure, JavascriptLink, CssLink
 import sys
+import cv2
+import io
+from streamlit import components
 
 # Configure logger
 logger.remove()  # Remove default handler
@@ -533,7 +536,6 @@ def create_timelapse(project_folder, project_name, status_placeholder, start_yea
                             image_path = os.path.join(source_folder, file)
                             image_files.append(image_path)
                             years.append(str(year))
-                            logger.info(f"Found image with fallback: {image_path}")
                 except:
                     pass
     
@@ -548,69 +550,23 @@ def create_timelapse(project_folder, project_name, status_placeholder, start_yea
     
     # Create video from image sequence
     try:
-        base_clip = ImageSequenceClip(image_files, durations=[frame_duration] * len(image_files))
+        # Create a folder for images with text
+        text_images_folder = os.path.join(project_folder, "text_images")
         
-        # Create text clips for each year
-        text_clips = []
-        for i, year in enumerate(years):
-            try:
-                font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fonts', 'Nexa-Heavy.ttf')
-                txt_clip = (TextClip(font=font_path, 
-                          text=str(year),
-                          font_size=30,
-                          color='white',
-                          vertical_align='bottom',
-                          horizontal_align='left')
-                  .set_duration(frame_duration)
-                  .set_start(i * frame_duration))
-            except Exception as e:
-                logger.warning(f"Failed to load custom font: {e}. Using default font instead.")
-                # Try multiple common system fonts
-                system_fonts = [
-                    "C:/Windows/Fonts/Arial.ttf",
-                    "C:/Windows/Fonts/Verdana.ttf",
-                    "C:/Windows/Fonts/Tahoma.ttf",
-                    "C:/Windows/Fonts/Calibri.ttf",
-                    "C:/Windows/Fonts/Segoe UI.ttf"
-                ]
-                
-                for default_font in system_fonts:
-                    try:
-                        txt_clip = (TextClip(font=default_font,
-                                  text=str(year), 
-                                  font_size=30,
-                                  color='white')
-                          .set_position(('left', 'bottom'))
-                          .set_duration(frame_duration)
-                          .set_start(i * frame_duration))
-                        break  # If successful, exit the loop
-                    except Exception as font_error:
-                        logger.warning(f"Failed to load font {default_font}: {font_error}")
-                        if default_font == system_fonts[-1]:  # If this is the last font to try
-                            # As a last resort, try using method='label' which might work without a font
-                            try:
-                                txt_clip = (TextClip(text=str(year), 
-                                        font_size=30,
-                                          method='label',
-                                          color='white')
-                                  .set_position(('left', 'bottom'))
-                                  .set_duration(frame_duration)
-                                  .set_start(i * frame_duration))
-                            except Exception as label_error:
-                                logger.error(f"All font options failed. Last error: {label_error}")
-                                # Create a simple ColorClip with no text as a last resort
-                                txt_clip = ColorClip(size=(1, 1), color=(0, 0, 0, 0), duration=frame_duration)
-            
-            text_clips.append(txt_clip)
+        # Add text to images instead of adding text overlays during video creation
+        status_placeholder.write("Adding year labels to images...")
+        labeled_image_files = add_text_to_images(image_files, years, text_images_folder, status_placeholder)
         
-        # Combine video and text
-        final_clip = CompositeVideoClip([base_clip] + text_clips)
+        # Create video from the labeled images
+        status_placeholder.write("Generating video from labeled images...")
+        base_clip = ImageSequenceClip(labeled_image_files, durations=[frame_duration] * len(labeled_image_files))
         
         # Save video in the project folder with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         video_filename = f"{project_name}_timelapse_{timestamp}.mp4"
         video_path = os.path.join(project_folder, video_filename)
-        final_clip.write_videofile(video_path, fps=24, audio=False)
+        base_clip.write_videofile(video_path, fps=24, audio=False)
+        
         success_msg = f"Timelapse video created: {video_path}"
         status_placeholder.write(f"✅ {success_msg}")
         logger.success(success_msg)
@@ -695,6 +651,499 @@ def get_year_badges(years):
     for year in sorted(years):
         badges_html += f'<span class="year-badge">{year}</span>'
     return badges_html
+
+def create_text_overlays(years, frame_duration):
+    """Creates text overlay clips for each year in the timelapse.
+    
+    Args:
+        years: List of years to create text overlays for
+        frame_duration: Duration in seconds for each frame
+        
+    Returns:
+        List of TextClip objects positioned and timed for the video
+    """
+    text_clips = []
+    
+    for i, year in enumerate(years):
+        try:
+            # Try multiple common system fonts
+            system_fonts = [
+                "C:/Windows/Fonts/Arial.ttf",
+                "C:/Windows/Fonts/Verdana.ttf",
+                "C:/Windows/Fonts/Tahoma.ttf",
+                "C:/Windows/Fonts/Calibri.ttf",
+                "C:/Windows/Fonts/Segoe UI.ttf",
+                # Add some Mac/Linux system fonts
+                "/System/Library/Fonts/Helvetica.ttc",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/TTF/Arial.ttf"
+            ]
+            
+            txt_clip = None
+            
+            # First try custom font if available
+            try:
+                font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fonts', 'Nexa-Heavy.ttf')
+                txt_clip = (TextClip(font=font_path, 
+                          text=str(year),
+                          font_size=30,
+                          color='yellow')
+                      .set_position(('left', 'bottom'))
+                      .set_duration(frame_duration)
+                      .set_start(i * frame_duration))
+            except Exception as custom_font_error:
+                logger.warning(f"Failed to load custom font: {custom_font_error}. Trying system fonts.")
+                
+                # If custom font fails, try system fonts
+                for font in system_fonts:
+                    if txt_clip is not None:
+                        break
+                        
+                    try:
+                        txt_clip = (TextClip(font=font,
+                                  text=str(year), 
+                                  font_size=30,
+                                  color='yellow')
+                              .set_position(('left', 'bottom'))
+                              .set_duration(frame_duration)
+                              .set_start(i * frame_duration))
+                    except Exception as font_error:
+                        logger.warning(f"Failed to load font {font}: {font_error}")
+                
+                # Last resort - try using method='label' which might work without a font
+                if txt_clip is None:
+                    try:
+                        txt_clip = (TextClip(text=str(year), 
+                                font_size=30,
+                                method='label',
+                                color='yellow')
+                          .set_position(('left', 'bottom'))
+                          .set_duration(frame_duration)
+                          .set_start(i * frame_duration))
+                    except Exception as label_error:
+                        logger.error(f"All font options failed. Last error: {label_error}")
+                        # Create a simple ColorClip with no text as a last resort
+                        txt_clip = ColorClip(size=(1, 1), color=(0, 0, 0, 0), duration=frame_duration)
+            
+            if txt_clip is not None:
+                text_clips.append(txt_clip)
+                
+        except Exception as e:
+            logger.exception(f"Error creating text overlay for year {year}: {e}")
+            # Skip this text clip if there's an error
+            
+    return text_clips
+
+def add_text_to_images(image_files, years, output_folder, status_placeholder):
+    """Adds year text directly to the image files before video creation.
+    
+    Args:
+        image_files: List of image file paths
+        years: List of corresponding years for each image
+        output_folder: Folder to save processed images with text
+        status_placeholder: Streamlit container for status updates
+        
+    Returns:
+        List of paths to new images with text added
+    """
+    # Create output folder if it doesn't exist
+    os.makedirs(output_folder, exist_ok=True)
+    
+    processed_image_files = []
+    
+    # Try to load a font
+    font = None
+    font_size = 36
+    
+    # Try multiple fonts
+    font_paths = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fonts', 'Nexa-Heavy.ttf'),
+        "C:/Windows/Fonts/Arial.ttf",
+        "C:/Windows/Fonts/Verdana.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    ]
+    
+    for path in font_paths:
+        try:
+            font = ImageFont.truetype(path, font_size)
+            logger.info(f"Successfully loaded font: {path}")
+            break
+        except Exception as e:
+            logger.warning(f"Could not load font {path}: {e}")
+    
+    # If no TrueType fonts are available, use default font
+    if font is None:
+        try:
+            # Try to use PIL's default font
+            font = ImageFont.load_default()
+            logger.info("Using default font")
+        except Exception as e:
+            logger.error(f"Could not load any font: {e}")
+            # Continue without a font - we'll use OpenCV's putText as fallback
+    
+    # Process each image
+    for i, (image_path, year) in enumerate(zip(image_files, years)):
+        try:
+            status_placeholder.write(f"Adding text to image {i+1}/{len(image_files)}...")
+            output_path = os.path.join(output_folder, f"text_{os.path.basename(image_path)}")
+            
+            # Try using PIL first (better font support)
+            try:
+                if font is not None:
+                    # Open image with PIL
+                    img = Image.open(image_path)
+                    draw = ImageDraw.Draw(img)
+                    
+                    # Get text size for positioning
+                    text = str(year)
+                    text_width, text_height = draw.textsize(text, font=font)
+                    
+                    # Position text in bottom left with padding
+                    x = 20
+                    y = img.height - text_height - 20
+                    
+                    # Add a semi-transparent background for text
+                    rect_padding = 10
+                    draw.rectangle(
+                        [(x - rect_padding, y - rect_padding), 
+                         (x + text_width + rect_padding, y + text_height + rect_padding)],
+                        fill=(0, 0, 0, 128)
+                    )
+                    
+                    # Draw text
+                    draw.text((x, y), text, font=font, fill=(255, 255, 255))
+                    
+                    # Save image
+                    img.save(output_path)
+                    logger.info(f"Added text to image using PIL: {output_path}")
+                else:
+                    raise Exception("No font available for PIL")
+            
+            except Exception as pil_error:
+                logger.warning(f"PIL text rendering failed: {pil_error}. Falling back to OpenCV.")
+                
+                # Fallback to OpenCV
+                img = cv2.imread(image_path)
+                
+                # Define text properties
+                text = str(year)
+                font_face = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 1.2
+                font_thickness = 3
+                font_color = (255, 255, 255)  # White color in BGR
+                
+                # Get text size for positioning
+                (text_width, text_height), baseline = cv2.getTextSize(
+                    text, font_face, font_scale, font_thickness
+                )
+                
+                # Position text in bottom left with padding
+                x = 20
+                y = img.shape[0] - 20  # 20px from bottom
+                
+                # Add a semi-transparent background for text
+                rect_padding = 10
+                overlay = img.copy()
+                cv2.rectangle(
+                    overlay,
+                    (x - rect_padding, y - text_height - rect_padding),
+                    (x + text_width + rect_padding, y + rect_padding),
+                    (0, 0, 0),  # Black background
+                    -1  # Filled rectangle
+                )
+                
+                # Apply transparency
+                alpha = 0.6
+                img = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0)
+                
+                # Add text
+                cv2.putText(
+                    img, text, (x, y - baseline), font_face, font_scale, font_color, font_thickness
+                )
+                
+                # Save image
+                cv2.imwrite(output_path, img)
+                logger.info(f"Added text to image using OpenCV: {output_path}")
+            
+            # Add to list of processed files
+            processed_image_files.append(output_path)
+            
+        except Exception as e:
+            logger.exception(f"Failed to add text to image {image_path}: {e}")
+            # Use original image if text addition fails
+            processed_image_files.append(image_path)
+            status_placeholder.write(f"⚠️ Could not add text to image {i+1}, using original")
+    
+    return processed_image_files
+
+def create_image_gallery(image_files, years, project_name):
+    """Create an HTML gallery of images with download options."""
+    if not image_files:
+        return "<p>No images available</p>"
+    
+    # Add CSS for the gallery
+    gallery_css = """
+    <style>
+        .image-gallery {
+            margin: 20px 0;
+        }
+        
+        .gallery-controls {
+            margin-bottom: 15px;
+        }
+        
+        .gallery-btn {
+            padding: 8px 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        
+        .gallery-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 16px;
+            margin-top: 20px;
+        }
+        
+        .gallery-item {
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            transition: transform 0.3s ease;
+            position: relative;
+        }
+        
+        .gallery-item:hover {
+            transform: scale(1.05);
+            z-index: 1;
+        }
+        
+        .gallery-img-container {
+            position: relative;
+            padding-top: 100%; /* 1:1 Aspect Ratio */
+            overflow: hidden;
+        }
+        
+        .gallery-img-container img {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        .gallery-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        
+        .gallery-item:hover .gallery-overlay {
+            opacity: 1;
+        }
+        
+        .download-btn {
+            color: white;
+            font-size: 12px;
+            background: rgba(76, 175, 80, 0.8);
+            padding: 4px 8px;
+            border-radius: 12px;
+            text-decoration: none;
+        }
+        
+        .download-btn:hover {
+            background: rgba(76, 175, 80, 1);
+        }
+    </style>
+    """
+    
+    gallery_html = f"""
+    <div class="image-gallery">
+        <h4>Images for {project_name}</h4>
+        <div class="gallery-grid">
+    """
+    
+    # Add each image to the gallery
+    for i, (image_path, year) in enumerate(zip(image_files, years)):
+        try:
+            # Create a base64 representation for preview
+            with open(image_path, "rb") as img_file:
+                img_data = base64.b64encode(img_file.read()).decode()
+                
+            # Generate HTML for each image tile
+            gallery_html += f"""
+            <div class="gallery-item" data-year="{year}">
+                <div class="gallery-img-container">
+                    <img src="data:image/jpeg;base64,{img_data}" alt="Aerial view from {year}" loading="lazy" />
+                    <div class="gallery-overlay">
+                        <div class="year-badge">{year}</div>
+                        <a href="data:image/jpeg;base64,{img_data}" download="{project_name}_{year}.jpg" class="download-btn">
+                            <span>Download</span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+            """
+        except Exception as e:
+            logger.error(f"Error creating gallery item for {image_path}: {e}")
+    
+    # Close the gallery div
+    gallery_html += """
+        </div>
+    </div>
+    """
+    
+    return gallery_css + gallery_html
+
+def get_zip_download_link(image_files, years, project_name):
+    """Create a download link for a zip file containing all images.
+    
+    Args:
+        image_files: List of image file paths
+        years: List of corresponding years for each image
+        project_name: Name of the project for zip filename
+        
+    Returns:
+        HTML string with download link
+    """
+    try:
+        # Create a BytesIO object to store the zip file
+        zip_buffer = io.BytesIO()
+        
+        # Create a zip file in the buffer
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for image_path, year in zip(image_files, years):
+                # Add each image to the zip with a descriptive filename
+                filename = f"{project_name}_{year}.jpg"
+                zip_file.write(image_path, arcname=filename)
+        
+        # Get the value of the BytesIO buffer
+        zip_buffer.seek(0)
+        zip_data = zip_buffer.getvalue()
+        
+        # Encode as base64 for download link
+        b64 = base64.b64encode(zip_data).decode()
+        
+        # Create download link
+        href = f'<a href="data:application/zip;base64,{b64}" download="{project_name}_images.zip" class="gallery-btn">📥 Download All Images</a>'
+        return href
+    except Exception as e:
+        logger.error(f"Error creating zip download link: {e}")
+        return "<p>Error creating download link</p>"
+
+def get_project_images(project_folder, project_name, use_processed=False, use_text_overlaid=True):
+    """Get all image files and their years for a project.
+    
+    Args:
+        project_folder: Path to the project folder
+        project_name: Name of the project
+        use_processed: Whether to use processed images if available
+        use_text_overlaid: Whether to use text-overlaid images if available
+        
+    Returns:
+        tuple: (list of image paths, list of corresponding years)
+    """
+    # Determine source folder based on priority
+    text_images_folder = os.path.join(project_folder, "text_images")
+    processed_folder = os.path.join(project_folder, "processed")
+    
+    # Choose folder based on priority: text_overlaid > processed > original
+    if use_text_overlaid and os.path.exists(text_images_folder) and len(os.listdir(text_images_folder)) > 0:
+        source_folder = text_images_folder
+        logger.info(f"Using text-overlaid images from: {text_images_folder}")
+    elif use_processed and os.path.exists(processed_folder) and len(os.listdir(processed_folder)) > 0:
+        source_folder = processed_folder
+        logger.info(f"Using processed images from: {processed_folder}")
+    else:
+        source_folder = project_folder
+        logger.info(f"Using original images from: {project_folder}")
+    
+    # Get all image files
+    image_files = []
+    years = []
+    
+    # Try to find images for all possible years
+    for year, layer_type in sorted(aerials, key=lambda x: x[0]):
+        # Try different filename patterns, including text-overlaid images
+        possible_patterns = []
+        
+        # Add text-overlaid image patterns
+        if source_folder == text_images_folder:
+            possible_patterns.extend([
+                f"text_{year}_{project_name}.jpg",
+                f"text_{year}_{layer_type}.jpg",
+                f"text_{year}.jpg"
+            ])
+        else:
+            # Regular image patterns
+            possible_patterns.extend([
+                f"{year}_{project_name}.jpg",
+                f"{year}_{layer_type}.jpg",
+                f"{year}.jpg"
+            ])
+        
+        found = False
+        for pattern in possible_patterns:
+            image_path = os.path.join(source_folder, pattern)
+            if os.path.exists(image_path):
+                image_files.append(image_path)
+                years.append(str(year))
+                found = True
+                break
+        
+        # If not found in primary folder, try fallback folders
+        if not found and source_folder != project_folder:
+            # Try the original folder
+            for pattern in [f"{year}_{project_name}.jpg", f"{year}_{layer_type}.jpg", f"{year}.jpg"]:
+                image_path = os.path.join(project_folder, pattern)
+                if os.path.exists(image_path):
+                    image_files.append(image_path)
+                    years.append(str(year))
+                    found = True
+                    break
+    
+    # As a fallback, find any images with year in filename in the source folder
+    if not image_files:
+        for file in os.listdir(source_folder):
+            if file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                try:
+                    # Try to extract year from filename, handling text_ prefix
+                    base_name = file
+                    if file.startswith("text_"):
+                        base_name = file[5:]  # Remove "text_" prefix
+                    
+                    parts = base_name.split('_')
+                    if len(parts) > 0:
+                        year_str = parts[0]
+                        if year_str.isdigit():
+                            year = int(year_str)
+                            image_path = os.path.join(source_folder, file)
+                            image_files.append(image_path)
+                            years.append(str(year))
+                except Exception as e:
+                    logger.warning(f"Could not extract year from filename {file}: {e}")
+    
+    # If still no images found and using text_images folder, try original folder
+    if not image_files and source_folder != project_folder:
+        logger.info(f"No images found in {source_folder}, falling back to {project_folder}")
+        return get_project_images(project_folder, project_name, False, False)
+    
+    return image_files, years
 
 # Main app layout
 def main():
@@ -850,6 +1299,13 @@ def main():
                             status.write("Reducing watermark visibility...")
                             process_all_images(project_folder, status)
                         
+                        # Create text-overlaid versions of all images
+                        status.write("Creating labeled versions of all images...")
+                        text_images_folder = os.path.join(project_folder, "text_images")
+                        downloaded_images, image_years = get_project_images(project_folder, project_name, use_processed=reduce_watermarks, use_text_overlaid=False)
+                        if downloaded_images:
+                            add_text_to_images(downloaded_images, image_years, text_images_folder, status)
+                        
                         progress_bar.progress((len(selected_years) + 1) / total_steps)
                         
                         # Create timelapse
@@ -922,35 +1378,53 @@ def main():
                         project_folder = os.path.join(OUTPUT_FOLDER, project['name'])
                         available_years = get_available_years(project['latitude'], project['longitude'], project['size'])
                         
-                        st.markdown("**Available Years:**", unsafe_allow_html=True)
-                        st.markdown(get_year_badges(available_years), unsafe_allow_html=True)
                         
-                        # Display timeline
-                        st.markdown(render_timeline(available_years), unsafe_allow_html=True)
+                        # Create tabs for Map, Gallery, and Videos instead of nested expanders
+                        tabs = st.tabs(["Map", "Image Gallery", "Video"])
                         
-                        # Display project location on map
-                        if 'latitude' in project and 'longitude' in project:
-                            m = folium.Map(location=[project['latitude'], project['longitude']], zoom_start=15)
-                            folium.Marker([project['latitude'], project['longitude']]).add_to(m)
+                        # Tab 1: Map
+                        with tabs[0]:
+                            if 'latitude' in project and 'longitude' in project:
+                                m = folium.Map(location=[project['latitude'], project['longitude']], zoom_start=15)
+                                folium.Marker([project['latitude'], project['longitude']]).add_to(m)
+                                
+                                # Add rectangle to show bounds
+                                if 'size' in project:
+                                    half_size = project['size'] / 2
+                                    bounds = [
+                                        [project['latitude'] - half_size, project['longitude'] - half_size],
+                                        [project['latitude'] + half_size, project['longitude'] + half_size]
+                                    ]
+                                    folium.Rectangle(bounds=bounds, color='red', fill=True, fill_opacity=0.2).add_to(m)
+                                
+                                folium_static(m, width=600, height=300)
+                        
+                        # Tab 2: Image Gallery
+                        with tabs[1]:
+                            # Get project images - prefer text-overlaid images
+                            image_files, image_years = get_project_images(project_folder, project['name'], use_processed=True, use_text_overlaid=True)
                             
-                            # Add rectangle to show bounds
-                            if 'size' in project:
-                                half_size = project['size'] / 2
-                                bounds = [
-                                    [project['latitude'] - half_size, project['longitude'] - half_size],
-                                    [project['latitude'] + half_size, project['longitude'] + half_size]
-                                ]
-                                folium.Rectangle(bounds=bounds, color='red', fill=True, fill_opacity=0.2).add_to(m)
-                            
-                            folium_static(m, width=600, height=300)
+                            if image_files:
+                                # Add zip download link
+                                st.markdown(get_zip_download_link(image_files, image_years, project['name']), unsafe_allow_html=True)
+                                
+                                # Display the gallery
+                                gallery_html = create_image_gallery(image_files, image_years, project['name'])
+                                st.components.v1.html(gallery_html, height=800, scrolling=True)
+                            else:
+                                st.info("No images available for this project")
                         
-                        # Display latest video if available
-                        if "videos" in project and project["videos"]:
-                            latest_video = project["videos"][-1]
-                            video_path = latest_video["path"]
-                            if os.path.exists(video_path):
-                                st.markdown("**Latest Timelapse:**", unsafe_allow_html=True)
-                                st.markdown(get_video_html(video_path), unsafe_allow_html=True)
+                        # Tab 3: Video preview
+                        with tabs[2]:
+                            # Display latest video if available
+                            if "videos" in project and project["videos"]:
+                                latest_video = project["videos"][-1]
+                                video_path = latest_video["path"]
+                                if os.path.exists(video_path):
+                                    st.markdown("**Latest Timelapse:**", unsafe_allow_html=True)
+                                    st.markdown(get_video_html(video_path), unsafe_allow_html=True)
+                            else:
+                                st.info("No videos created yet for this project")
                     
                     with col2:
                         project_folder = os.path.join(OUTPUT_FOLDER, project['name'])
@@ -1027,16 +1501,55 @@ def main():
                     st.markdown("**Selected Years:**", unsafe_allow_html=True)
                     st.markdown(get_year_badges(selected_years), unsafe_allow_html=True)
                     
-                    # Custom timelapse options
-                    col1, col2 = st.columns(2)
+                    # Use tabs instead of an expander
+                    creation_tabs = st.tabs(["Timelapse Settings", "Available Images"])
                     
-                    with col1:
-                        frame_duration = st.slider("Frame Duration (seconds)", min_value=0.5, max_value=5.0, value=1.0, step=0.5)
+                    # Tab 1: Timelapse Settings
+                    with creation_tabs[0]:
+                        # Custom timelapse options
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            frame_duration = st.slider("Frame Duration (seconds)", min_value=0.5, max_value=5.0, value=1.0, step=0.5)
+                        
+                        with col2:
+                            use_processed = st.checkbox("Use Processed Images (reduced watermark)", value=True)
+                            reverse_order = st.checkbox("Reverse Chronological Order")
                     
-                    with col2:
-                        use_processed = st.checkbox("Use Processed Images (reduced watermark)", value=True)
-                        reverse_order = st.checkbox("Reverse Chronological Order")
+                    # Tab 2: Available Images
+                    with creation_tabs[1]:
+                        # Get project images and show gallery - prefer text-overlaid images
+                        image_files, image_years = get_project_images(project_folder, project_name, use_processed=use_processed, use_text_overlaid=True)
+                        
+                        if image_files:
+                            # Add zip download link
+                            st.markdown(get_zip_download_link(
+                                [img for img, yr in zip(image_files, image_years) if int(yr) in selected_years],
+                                [yr for yr in image_years if int(yr) in selected_years],
+                                project_name
+                            ), unsafe_allow_html=True)
+                            
+                            # Display the gallery only for selected years
+                            filtered_images = []
+                            filtered_years = []
+                            for img, yr in zip(image_files, image_years):
+                                try:
+                                    if int(yr) in selected_years:
+                                        filtered_images.append(img)
+                                        filtered_years.append(yr)
+                                except ValueError:
+                                    # Handle case where year might not be a valid integer
+                                    pass
+                                    
+                            if filtered_images:
+                                gallery_html = create_image_gallery(filtered_images, filtered_years, project_name)
+                                st.components.v1.html(gallery_html, height=800, scrolling=True)
+                            else:
+                                st.info("No images available for the selected years")
+                        else:
+                            st.info("No images available for this project")
                     
+                    # Move the Generate Timelapse button outside of tabs
                     if st.button("Generate Timelapse", type="primary"):
                         if not selected_years:
                             st.error("Please select at least one year")
